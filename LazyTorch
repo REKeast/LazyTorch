@@ -1,0 +1,137 @@
+import tkinter as tk
+from tkinter import messagebox, scrolledtext, ttk
+
+activation_map = {
+    "relu": "nn.ReLU()",
+    "tanh": "nn.Tanh()",
+    "sigmoid": "nn.Sigmoid()",
+    "leaky_relu": "nn.LeakyReLU()",
+}
+
+# Store architecture as list of (size, activation)
+layer_stack = []
+
+def add_layer():
+    try:
+        size = int(layer_size_entry.get())
+        act = activation_var.get().strip().lower()
+
+        if not act:
+            raise ValueError("Choose an activation")
+
+        layer_stack.append((size, act))
+        update_layers_display()
+
+        layer_size_entry.delete(0, tk.END)
+
+    except ValueError as e:
+        messagebox.showerror("Error", str(e))
+
+def update_layers_display():
+    layers_list.delete(0, tk.END)
+    for idx, (size, act) in enumerate(layer_stack):
+        layers_list.insert(tk.END, f"Layer {idx+1}: {size} units, {act.upper()}")
+
+def clear_layers():
+    layer_stack.clear()
+    update_layers_display()
+
+def generate_code():
+    try:
+        input_size = int(input_entry.get())
+        output_size = int(output_entry.get())
+        task = task_var.get()
+
+        if not layer_stack:
+            raise ValueError("No hidden layers added.")
+
+        code_lines = [f"nn.Linear({input_size}, {layer_stack[0][0]})"]
+        for i in range(len(layer_stack) - 1):
+            act = activation_map.get(layer_stack[i][1], "nn.ReLU()")
+            code_lines.append(act)
+            code_lines.append(f"nn.Linear({layer_stack[i][0]}, {layer_stack[i+1][0]})")
+
+        # activation after last hidden layer
+        code_lines.append(activation_map.get(layer_stack[-1][1], "nn.ReLU()"))
+
+        # output layer (no activation by default)
+        code_lines.append(f"nn.Linear({layer_stack[-1][0]}, {output_size})")
+
+        # optionally add softmax if classification
+        if task == "classification":
+            code_lines.append("nn.Softmax(dim=1)  # optional, often handled outside")
+
+        layers_str = ",\n            ".join(code_lines)
+
+        code = f"""import torch
+import torch.nn as nn
+
+class CustomNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = nn.Sequential(
+            {layers_str}
+        )
+
+    def forward(self, x):
+        return self.model(x)
+"""
+        output_text.delete("1.0", tk.END)
+        output_text.insert(tk.END, code)
+
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+def copy_to_clipboard():
+    code = output_text.get("1.0", tk.END)
+    root.clipboard_clear()
+    root.clipboard_append(code)
+    messagebox.showinfo("Copied", "Code copied to clipboard!")
+
+# GUI setup
+root = tk.Tk()
+root.title("PyTorch Code Generator with Layer Builder")
+
+tk.Label(root, text="Input Size:").grid(row=0, column=0)
+input_entry = tk.Entry(root)
+input_entry.grid(row=0, column=1)
+
+tk.Label(root, text="Output Size:").grid(row=1, column=0)
+output_entry = tk.Entry(root)
+output_entry.grid(row=1, column=1)
+
+# Task type selector
+tk.Label(root, text="Task Type:").grid(row=0, column=2)
+task_var = tk.StringVar(value="classification")
+task_menu = ttk.Combobox(root, textvariable=task_var, values=["classification", "regression"], state="readonly")
+task_menu.grid(row=0, column=3)
+
+# Add Layer section
+tk.Label(root, text="Add Hidden Layer").grid(row=2, column=0, columnspan=2, pady=(10,0))
+
+tk.Label(root, text="Layer Size:").grid(row=3, column=0)
+layer_size_entry = tk.Entry(root)
+layer_size_entry.grid(row=3, column=1)
+
+tk.Label(root, text="Activation:").grid(row=4, column=0)
+activation_var = tk.StringVar(value="relu")
+activation_menu = ttk.Combobox(root, textvariable=activation_var, values=list(activation_map.keys()), state="readonly")
+activation_menu.grid(row=4, column=1)
+
+tk.Button(root, text="+ Add Layer", command=add_layer).grid(row=5, column=0, columnspan=2, pady=5)
+tk.Button(root, text="Clear Layers", command=clear_layers).grid(row=6, column=0, columnspan=2, pady=5)
+
+# Display added layers
+tk.Label(root, text="Current Layers:").grid(row=7, column=0, columnspan=2)
+layers_list = tk.Listbox(root, height=5, width=40)
+layers_list.grid(row=8, column=0, columnspan=2, pady=5)
+
+# Generate + Copy buttons
+tk.Button(root, text="Generate Code", command=generate_code).grid(row=9, column=0, columnspan=2, pady=5)
+tk.Button(root, text="Copy to Clipboard", command=copy_to_clipboard).grid(row=10, column=0, columnspan=2)
+
+# Code output
+output_text = scrolledtext.ScrolledText(root, width=80, height=20)
+output_text.grid(row=11, column=0, columnspan=4, padx=10, pady=10)
+
+root.mainloop()
