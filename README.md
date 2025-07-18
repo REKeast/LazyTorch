@@ -2,7 +2,7 @@
 
 A graphical interface to design and export custom feedforward neural networks in PyTorch. This tool allows you to build models layer-by-layer, configure training parameters, and generate fully working Python code — including optional training loops with dummy data.
 
-## 🚀 Features
+##  Features
 
 -  Add, reorder, and configure hidden layers (size, activation, dropout)
 -  Specify input/output dimensions, loss function, optimizer, and training settings
