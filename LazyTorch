@@ -6,67 +6,142 @@ activation_map = {
     "tanh": "nn.Tanh()",
     "sigmoid": "nn.Sigmoid()",
     "leaky_relu": "nn.LeakyReLU()",
+    "gelu": "nn.GELU()",
+    "swish": "nn.SiLU()",
+    "none": ""
 }
 
-# Store architecture as list of (size, activation)
 layer_stack = []
 
 def add_layer():
     try:
         size = int(layer_size_entry.get())
         act = activation_var.get().strip().lower()
+        dropout_rate = float(dropout_entry.get()) if dropout_entry.get().strip() else 0.0
 
         if not act:
             raise ValueError("Choose an activation")
 
-        layer_stack.append((size, act))
+        if dropout_rate < 0 or dropout_rate >= 1:
+            raise ValueError("Dropout rate must be between 0 and 1 (exclusive)")
+
+        layer_stack.append((size, act, dropout_rate))
         update_layers_display()
 
         layer_size_entry.delete(0, tk.END)
+        dropout_entry.delete(0, tk.END)
 
     except ValueError as e:
         messagebox.showerror("Error", str(e))
 
+def remove_layer():
+    selection = layers_list.curselection()
+    if not selection:
+        messagebox.showwarning("No Selection", "Please select a layer to remove.")
+        return
+    selected_idx = selection[0]
+    layer_stack.pop(selected_idx)
+    update_layers_display()
+
+def move_layer_up():
+    selection = layers_list.curselection()
+    if not selection:
+        return
+    idx = selection[0]
+    if idx == 0:
+        return
+    layer_stack[idx], layer_stack[idx - 1] = layer_stack[idx - 1], layer_stack[idx]
+    update_layers_display()
+    layers_list.selection_set(idx - 1)
+
+def move_layer_down():
+    selection = layers_list.curselection()
+    if not selection:
+        return
+    idx = selection[0]
+    if idx == len(layer_stack) - 1:
+        return
+    layer_stack[idx], layer_stack[idx + 1] = layer_stack[idx + 1], layer_stack[idx]
+    update_layers_display()
+    layers_list.selection_set(idx + 1)
+
 def update_layers_display():
     layers_list.delete(0, tk.END)
-    for idx, (size, act) in enumerate(layer_stack):
-        layers_list.insert(tk.END, f"Layer {idx+1}: {size} units, {act.upper()}")
+    for idx, (size, act, dropout_rate) in enumerate(layer_stack):
+        text = f"Layer {idx+1}: {size} units, {act.upper()}"
+        if dropout_rate > 0:
+            text += f", Dropout={dropout_rate}"
+        layers_list.insert(tk.END, text)
 
 def clear_layers():
     layer_stack.clear()
     update_layers_display()
 
+
+
 def generate_code():
     try:
         input_size = int(input_entry.get())
         output_size = int(output_entry.get())
-        task = task_var.get()
+        class_name = name_entry.get().strip()
+
+        if not class_name.isidentifier():
+            raise ValueError("Invalid class name. Must be a valid Python identifier.")
 
         if not layer_stack:
             raise ValueError("No hidden layers added.")
 
-        code_lines = [f"nn.Linear({input_size}, {layer_stack[0][0]})"]
+        loss_function = loss_var.get()
+        
+        # Build layers
+        code_lines = []
+        
+        # First layer: input -> first hidden
+        code_lines.append(f"nn.Linear({input_size}, {layer_stack[0][0]})")
+        
+        # Add activation and dropout for first layer
+        first_size, first_act, first_dropout = layer_stack[0]
+        if first_act != "none":
+            code_lines.append(activation_map.get(first_act, "nn.ReLU()"))
+        if first_dropout > 0:
+            code_lines.append(f"nn.Dropout({first_dropout})")
+        
+        # Hidden layers
         for i in range(len(layer_stack) - 1):
-            act = activation_map.get(layer_stack[i][1], "nn.ReLU()")
-            code_lines.append(act)
-            code_lines.append(f"nn.Linear({layer_stack[i][0]}, {layer_stack[i+1][0]})")
-
-        # activation after last hidden layer
-        code_lines.append(activation_map.get(layer_stack[-1][1], "nn.ReLU()"))
-
-        # output layer (no activation by default)
-        code_lines.append(f"nn.Linear({layer_stack[-1][0]}, {output_size})")
-
-        # optionally add softmax if classification
-        if task == "classification":
-            code_lines.append("nn.Softmax(dim=1)  # optional, often handled outside")
+            curr_size = layer_stack[i][0]
+            next_size, next_act, next_dropout = layer_stack[i + 1]
+            
+            # Linear layer
+            code_lines.append(f"nn.Linear({curr_size}, {next_size})")
+            
+            # Activation
+            if next_act != "none":
+                code_lines.append(activation_map.get(next_act, "nn.ReLU()"))
+            
+            # Dropout
+            if next_dropout > 0:
+                code_lines.append(f"nn.Dropout({next_dropout})")
+        
+        # Final layer: last hidden -> output
+        final_size = layer_stack[-1][0]
+        code_lines.append(f"nn.Linear({final_size}, {output_size})")
+        
+        # Add output activation based on loss function
+        if loss_function == "BCELoss":
+            code_lines.append("nn.Sigmoid()")
+        elif loss_function == "CrossEntropyLoss":
+            # No activation needed - CrossEntropyLoss expects logits
+            pass
+        elif loss_function == "MSELoss":
+            # No activation for regression tasks
+            pass
 
         layers_str = ",\n            ".join(code_lines)
 
         code = f"""import torch
 import torch.nn as nn
 
-class CustomNet(nn.Module):
+class {class_name}(nn.Module):
     def __init__(self):
         super().__init__()
         self.model = nn.Sequential(
@@ -76,8 +151,60 @@ class CustomNet(nn.Module):
     def forward(self, x):
         return self.model(x)
 """
+
+        if include_train_var.get():
+            try:
+                epochs = int(epochs_entry.get())
+                lr = float(lr_entry.get())
+            except ValueError:
+                messagebox.showerror("Invalid Config", "Epochs and LR must be numeric.")
+                return
+
+            loss_function = loss_var.get()
+            optimizer_name = optimizer_var.get()
+            
+            # Generate appropriate dummy targets based on loss function
+            if loss_function == "BCELoss":
+                targets_line = f"targets = torch.randint(0, 2, (32, {output_size})).float().to(device)"
+            elif loss_function == "CrossEntropyLoss":
+                targets_line = f"targets = torch.randint(0, {output_size}, (32,)).to(device)"
+            else:  # MSELoss
+                targets_line = f"targets = torch.randn(32, {output_size}).to(device)"
+
+            train_loop = f"""
+
+# --- Training Configuration ---
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = {class_name}().to(device)
+criterion = nn.{loss_function}()
+optimizer = torch.optim.{optimizer_name}(model.parameters(), lr={lr})
+
+# --- Training Loop ---
+model.train()
+for epoch in range({epochs}):
+    # Generate dummy data (replace with your actual data loading)
+    inputs = torch.randn(32, {input_size}).to(device)
+    {targets_line}
+    
+    # Forward pass
+    outputs = model(inputs)
+    loss = criterion(outputs, targets)
+    
+    # Backward pass and optimization
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    
+    if (epoch + 1) % 10 == 0:
+        print(f"Epoch {{epoch+1}}/{epochs}: Loss = {{loss.item():.4f}}")
+
+print("Training completed!")
+"""
+            code += train_loop
+
         output_text.delete("1.0", tk.END)
         output_text.insert(tk.END, code)
+        output_text.see(tk.END)
 
     except Exception as e:
         messagebox.showerror("Error", str(e))
@@ -88,50 +215,129 @@ def copy_to_clipboard():
     root.clipboard_append(code)
     messagebox.showinfo("Copied", "Code copied to clipboard!")
 
+def save_to_file():
+    try:
+        from tkinter import filedialog
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".py",
+            filetypes=[("Python files", "*.py"), ("All files", "*.*")]
+        )
+        if filename:
+            with open(filename, 'w') as f:
+                f.write(output_text.get("1.0", tk.END))
+            messagebox.showinfo("Saved", f"Code saved to {filename}")
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to save file: {str(e)}")
+
 # GUI setup
 root = tk.Tk()
-root.title("PyTorch Code Generator with Layer Builder")
+root.title("PyTorch Neural Network Code Generator")
+root.geometry("900x700")
 
-tk.Label(root, text="Input Size:").grid(row=0, column=0)
-input_entry = tk.Entry(root)
-input_entry.grid(row=0, column=1)
+# Create main frame with scrollbar
+main_frame = tk.Frame(root)
+main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-tk.Label(root, text="Output Size:").grid(row=1, column=0)
-output_entry = tk.Entry(root)
-output_entry.grid(row=1, column=1)
+# Input Fields Frame
+input_frame = tk.LabelFrame(main_frame, text="Model Configuration", padx=10, pady=10)
+input_frame.pack(fill=tk.X, pady=(0, 10))
 
-# Task type selector
-tk.Label(root, text="Task Type:").grid(row=0, column=2)
-task_var = tk.StringVar(value="classification")
-task_menu = ttk.Combobox(root, textvariable=task_var, values=["classification", "regression"], state="readonly")
-task_menu.grid(row=0, column=3)
+tk.Label(input_frame, text="Model Class Name:").grid(row=0, column=0, sticky="w")
+name_entry = tk.Entry(input_frame, width=15)
+name_entry.insert(0, "CustomNet")
+name_entry.grid(row=0, column=1, padx=5)
 
-# Add Layer section
-tk.Label(root, text="Add Hidden Layer").grid(row=2, column=0, columnspan=2, pady=(10,0))
+tk.Label(input_frame, text="Input Size:").grid(row=1, column=0, sticky="w")
+input_entry = tk.Entry(input_frame, width=15)
+input_entry.grid(row=1, column=1, padx=5)
 
-tk.Label(root, text="Layer Size:").grid(row=3, column=0)
-layer_size_entry = tk.Entry(root)
-layer_size_entry.grid(row=3, column=1)
+tk.Label(input_frame, text="Output Size:").grid(row=2, column=0, sticky="w")
+output_entry = tk.Entry(input_frame, width=15)
+output_entry.grid(row=2, column=1, padx=5)
 
-tk.Label(root, text="Activation:").grid(row=4, column=0)
+# Training Configuration Frame
+train_frame = tk.LabelFrame(main_frame, text="Training Configuration", padx=10, pady=10)
+train_frame.pack(fill=tk.X, pady=(0, 10))
+
+tk.Label(train_frame, text="Epochs:").grid(row=0, column=0, sticky='w')
+epochs_entry = tk.Entry(train_frame, width=8)
+epochs_entry.insert(0, "100")
+epochs_entry.grid(row=0, column=1, padx=5)
+
+tk.Label(train_frame, text="Learning Rate:").grid(row=0, column=2, sticky='w')
+lr_entry = tk.Entry(train_frame, width=8)
+lr_entry.insert(0, "0.001")
+lr_entry.grid(row=0, column=3, padx=5)
+
+tk.Label(train_frame, text="Optimizer:").grid(row=1, column=0, sticky='w')
+optimizer_var = tk.StringVar(value="Adam")
+optimizer_menu = ttk.Combobox(train_frame, textvariable=optimizer_var, values=["Adam", "SGD", "RMSprop"], state="readonly", width=12)
+optimizer_menu.grid(row=1, column=1, padx=5)
+
+tk.Label(train_frame, text="Loss Function:").grid(row=1, column=2, sticky='w')
+loss_var = tk.StringVar(value="MSELoss")
+loss_menu = ttk.Combobox(train_frame, textvariable=loss_var, values=["MSELoss", "CrossEntropyLoss", "BCELoss"], state="readonly", width=12)
+loss_menu.grid(row=1, column=3, padx=5)
+
+# Layer Builder Frame
+layer_frame = tk.LabelFrame(main_frame, text="Layer Builder", padx=10, pady=10)
+layer_frame.pack(fill=tk.X, pady=(0, 10))
+
+tk.Label(layer_frame, text="Layer Size:").grid(row=0, column=0, sticky='w')
+layer_size_entry = tk.Entry(layer_frame, width=10)
+layer_size_entry.grid(row=0, column=1, padx=5)
+
+tk.Label(layer_frame, text="Activation:").grid(row=0, column=2, sticky='w')
 activation_var = tk.StringVar(value="relu")
-activation_menu = ttk.Combobox(root, textvariable=activation_var, values=list(activation_map.keys()), state="readonly")
-activation_menu.grid(row=4, column=1)
+activation_menu = ttk.Combobox(layer_frame, textvariable=activation_var, values=list(activation_map.keys()), state="readonly", width=10)
+activation_menu.grid(row=0, column=3, padx=5)
 
-tk.Button(root, text="+ Add Layer", command=add_layer).grid(row=5, column=0, columnspan=2, pady=5)
-tk.Button(root, text="Clear Layers", command=clear_layers).grid(row=6, column=0, columnspan=2, pady=5)
+tk.Label(layer_frame, text="Dropout Rate:").grid(row=0, column=4, sticky='w')
+dropout_entry = tk.Entry(layer_frame, width=8)
+dropout_entry.insert(0, "0.0")
+dropout_entry.grid(row=0, column=5, padx=5)
 
-# Display added layers
-tk.Label(root, text="Current Layers:").grid(row=7, column=0, columnspan=2)
-layers_list = tk.Listbox(root, height=5, width=40)
-layers_list.grid(row=8, column=0, columnspan=2, pady=5)
+tk.Button(layer_frame, text="Add Layer", command=add_layer, bg='lightgreen').grid(row=0, column=6, padx=10)
 
-# Generate + Copy buttons
-tk.Button(root, text="Generate Code", command=generate_code).grid(row=9, column=0, columnspan=2, pady=5)
-tk.Button(root, text="Copy to Clipboard", command=copy_to_clipboard).grid(row=10, column=0, columnspan=2)
+# Current Layers Frame
+layers_frame = tk.LabelFrame(main_frame, text="Current Layers", padx=10, pady=10)
+layers_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
-# Code output
-output_text = scrolledtext.ScrolledText(root, width=80, height=20)
-output_text.grid(row=11, column=0, columnspan=4, padx=10, pady=10)
+layers_list = tk.Listbox(layers_frame, height=6)
+layers_list.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+layer_controls = tk.Frame(layers_frame)
+layer_controls.pack(fill=tk.X)
+
+tk.Button(layer_controls, text="Remove Selected", command=remove_layer).pack(side=tk.LEFT, padx=2)
+tk.Button(layer_controls, text="Move Up", command=move_layer_up).pack(side=tk.LEFT, padx=2)
+tk.Button(layer_controls, text="Move Down", command=move_layer_down).pack(side=tk.LEFT, padx=2)
+tk.Button(layer_controls, text="Clear All", command=clear_layers).pack(side=tk.LEFT, padx=2)
+
+# Options Frame
+options_frame = tk.LabelFrame(main_frame, text="Options", padx=10, pady=10)
+options_frame.pack(fill=tk.X, pady=(0, 10))
+
+include_train_var = tk.BooleanVar()
+tk.Checkbutton(options_frame, text="Include Training Loop", variable=include_train_var).pack(side=tk.LEFT, padx=10)
+
+# Action Buttons Frame
+action_frame = tk.Frame(main_frame)
+action_frame.pack(fill=tk.X, pady=(0, 10))
+
+tk.Button(action_frame, text="Generate Code", command=generate_code, bg='lightblue', font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=5)
+tk.Button(action_frame, text="Copy to Clipboard", command=copy_to_clipboard).pack(side=tk.LEFT, padx=5)
+tk.Button(action_frame, text="Save to File", command=save_to_file).pack(side=tk.LEFT, padx=5)
+
+# Output Code Frame
+output_frame = tk.LabelFrame(main_frame, text="Generated Code", padx=10, pady=10)
+output_frame.pack(fill=tk.BOTH, expand=True)
+
+output_text = scrolledtext.ScrolledText(output_frame, height=20, font=('Courier', 10))
+output_text.pack(fill=tk.BOTH, expand=True)
+
+# Bind Enter key to add layer
+layer_size_entry.bind('<Return>', lambda event: add_layer())
+dropout_entry.bind('<Return>', lambda event: add_layer())
 
 root.mainloop()
