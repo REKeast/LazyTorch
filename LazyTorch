@@ -178,13 +178,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = {class_name}().to(device)
 criterion = nn.{loss_function}()
 optimizer = torch.optim.{optimizer_name}(model.parameters(), lr={lr})
-
+# Generate dummy data (replace with your actual data loading)
+inputs = torch.randn(32, {input_size}).to(device)
+{targets_line}
 # --- Training Loop ---
 model.train()
 for epoch in range({epochs}):
-    # Generate dummy data (replace with your actual data loading)
-    inputs = torch.randn(32, {input_size}).to(device)
-    {targets_line}
+
     
     # Forward pass
     outputs = model(inputs)
@@ -266,7 +266,7 @@ epochs_entry.grid(row=0, column=1, padx=5)
 
 tk.Label(train_frame, text="Learning Rate:").grid(row=0, column=2, sticky='w')
 lr_entry = tk.Entry(train_frame, width=8)
-lr_entry.insert(0, "0.001")
+lr_entry.insert(0, "0.01")
 lr_entry.grid(row=0, column=3, padx=5)
 
 tk.Label(train_frame, text="Optimizer:").grid(row=1, column=0, sticky='w')
